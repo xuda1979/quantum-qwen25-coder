@@ -61,7 +61,22 @@ quantum-qwen25-coder/
 
    上述命令会抓取默认的教程、GitHub 以及 StackExchange 资源，自动完成去重与质量过滤。
 
-4. **数据清洗与增强：**
+4. **PDF 论文转数据集：**
+   - 使用 `tools/pdf_to_sft.py` 可将论文 PDF 批量转化为 JSONL 数据。脚本会抽取 PDF 文本、按照指定窗口大小切分为多个片段，并生成包含 `prompt` 与 `code` 字段的训练样本（默认目标是原始文本，可通过模板参数自定义）。
+   - 示例命令：
+
+     ```bash
+     pip install pypdf  # 如未安装 PDF 解析依赖
+     python tools/pdf_to_sft.py \
+         --input data/papers \
+         --output data/papers.jsonl \
+         --chunk-size 800 \
+         --chunk-overlap 120
+     ```
+
+   - 生成的数据可直接作为 `train_sft.py` 或 `train_peft.py` 的输入文件使用，必要时可结合额外的人工标注或模板进一步加工。
+
+5. **数据清洗与增强：**
    - 清理掉无关信息，例如纯文字描述或缺少代码的记录。
    - 对代码进行格式化，确保缩进和语法正确。
    - 可添加自定义系统提示，鼓励模型遵循某些编码规范（如使用 Qiskit 优雅 API）。
