@@ -47,9 +47,19 @@ quantum-qwen25-coder/
    - 每条数据应包含 `prompt` 字段（自然语言问题或任务描述）和 `code` 字段（对应的量子代码）。可选地包含 `analysis` 或 `reasoning` 字段，用于引导模型先思考再作答。
 
 3. **数据爬取：**
-   - 本仓库提供的 `crawler.py` 演示了如何从 Qiskit 教程页面提取标题和代码块，保存为 JSONL 文件。具体解析规则需要根据网页结构调整。
-   - 在爬取网站内容时请遵守目标站点的使用条款，设置合理的请求间隔（脚本中默认每个页面暂停 1 秒）。
-   - 如果目标数据集需要授权，请确保具备相应的权限后再下载使用。
+   - 新版 `crawler.py` 集成了多数据源采集流程，可同时抓取 Qiskit Textbook、精选 GitHub 原始文件以及 StackExchange 热门问答中的量子代码片段。
+   - 通过 `--source` 指定启用的数据源，脚本会自动过滤包含量子关键字且代码行数达标的示例，并写入带有来源元数据的 JSONL 文件，方便后续清洗或去重。
+   - 在爬取网站内容时请遵守目标站点的使用条款，脚本默认在请求之间等待约 0.8 秒，必要时可自定义代理或认证信息。
+
+   ```bash
+   python crawler.py \
+       --source qiskit github stackexchange \
+       --output data/quantum_corpus.jsonl \
+       --stackexchange_questions 10 \
+       --min_code_lines 8
+   ```
+
+   上述命令会抓取默认的教程、GitHub 以及 StackExchange 资源，自动完成去重与质量过滤。
 
 4. **数据清洗与增强：**
    - 清理掉无关信息，例如纯文字描述或缺少代码的记录。
@@ -101,8 +111,13 @@ python train_sft.py \
     --validation_file data/valid.jsonl \
     --output_dir outputs/sft_qwen25_quantum \
     --per_device_train_batch_size 1 \
-    --num_train_epochs 3
+    --num_train_epochs 3 \
+    --npu 2  # 在两张 NPU 上分布式训练，可按需调整
 ```
+
+当 `--npu` 设置为大于 1 的值时，脚本会自动通过 `torchrun` 重新拉起分布式进程，并为 Ascend NPU 设置
+`ASCEND_VISIBLE_DEVICES`/`ASCEND_RT_VISIBLE_DEVICES` 等环境变量。单卡场景下也可以传入 `--npu 1` 来强制
+使用 NPU 设备训练。
 
 > 若在显存紧张的情况下无法完成全模型微调，可考虑降低 `per_device_train_batch_size` 并增加梯度累积步数。
 
@@ -127,8 +142,12 @@ python train_peft.py \
     --lora_r 8 \
     --lora_alpha 32 \
     --lora_dropout 0.05 \
-    --num_train_epochs 3
+    --num_train_epochs 3 \
+    --npu 4  # 示例：在四张 NPU 上进行 LoRA 训练
 ```
+
+LoRA 训练同样支持 `--npu` 参数，脚本会自动切换到 Ascend NPU 设备并设置分布式后端为 `hccl`。如果环境中未安装
+`torch_npu`，脚本会给出明确的错误提示。
 
 PEFT 模型训练完成后，权重存储在 `output_dir` 中，可使用 `AutoModelForCausalLM.from_pretrained` 加载。生成时无需合并 LoRA 权重，因为 PEFT 框架会自动注入。
 
