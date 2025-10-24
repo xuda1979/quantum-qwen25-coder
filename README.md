@@ -62,7 +62,7 @@ quantum-qwen25-coder/
    上述命令会抓取默认的教程、GitHub 以及 StackExchange 资源，自动完成去重与质量过滤。
 
 4. **PDF 论文转数据集：**
-   - 使用 `tools/pdf_to_sft.py` 可将论文 PDF 批量转化为 JSONL 数据。脚本会抽取 PDF 文本、按照指定窗口大小切分为多个片段，并生成包含 `prompt` 与 `code` 字段的训练样本（默认目标是原始文本，可通过模板参数自定义）。
+   - 使用 `tools/pdf_to_sft.py` 可将论文 PDF 批量转化为 JSONL 数据。脚本会抽取 PDF 文本、按照指定窗口大小切分为多个片段，并生成包含 `prompt` 与 `code` 字段的训练样本（默认目标是原始文本，可通过模板参数自定义）。新版脚本支持启用多进程并行解析、对生成的 `code` 字段去重、自动裁剪参考文献部分以及输出 `analysis` 字段，适合一次性处理数千篇论文。
    - 示例命令：
 
      ```bash
@@ -71,10 +71,20 @@ quantum-qwen25-coder/
          --input data/papers \
          --output data/papers.jsonl \
          --chunk-size 800 \
-         --chunk-overlap 120
+         --chunk-overlap 120 \
+         --strip-references \
+         --min-chunk-length 200 \
+         --workers 8
      ```
 
    - 生成的数据可直接作为 `train_sft.py` 或 `train_peft.py` 的输入文件使用，必要时可结合额外的人工标注或模板进一步加工。
+   - 如果希望验证脚本关键逻辑，可运行项目内置的 `pytest` 单元测试，它会对文本清洗、分块、模板化输出等核心函数进行覆盖：
+
+      ```bash
+      pytest tests/test_pdf_to_sft.py
+      ```
+
+      该测试套件会在临时目录下构造虚拟 PDF 路径，并通过 `monkeypatch` 注入伪造的文本内容，因此无需真实 PDF 文件即可快速检查脚本行为。
 
 5. **数据清洗与增强：**
    - 清理掉无关信息，例如纯文字描述或缺少代码的记录。
