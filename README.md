@@ -91,6 +91,55 @@ quantum-qwen25-coder/
    - 对代码进行格式化，确保缩进和语法正确。
    - 可添加自定义系统提示，鼓励模型遵循某些编码规范（如使用 Qiskit 优雅 API）。
 
+## 容器环境限制与推荐操作流程
+
+由于当前仓库附带的开发容器仅提供 CPU 计算资源，且无法联网下载数十 GB 的预训练权重，也缺少完整的 GPU/NPU 驱动与编译工具链，因此**无法在该环境内直接执行 Qwen2.5‑Coder‑7B‑Instruct 的微调任务**。要完成端到端的训练，请按照以下建议在具备充足算力与网络的本地或云端环境中操作：
+
+1. **准备 PDF 语料并转换为 JSONL 数据集**：在目标机器上安装 `pypdf` 等依赖，运行本仓库提供的 `tools/pdf_to_sft.py` 脚本，将量子相关论文、文档 PDF 转换为模型可用的 `prompt`/`code` 样本。示例命令如下：
+
+   ```bash
+   pip install pypdf
+   python tools/pdf_to_sft.py \
+       --input data/papers \
+       --output data/papers.jsonl \
+       --chunk-size 800 \
+       --chunk-overlap 120 \
+       --strip-references \
+       --min-chunk-length 200 \
+       --workers 8
+   ```
+
+2. **在转换前后运行快速自检**：可通过 `pytest tests/test_pdf_to_sft.py` 在本地验证脚本的核心逻辑是否正常，这一步不需要真实 PDF 文件即可完成。
+
+3. **下载基础模型权重与训练依赖**：在具备网络和存储的主机上安装 `torch`、`transformers`、`peft` 等依赖，并使用 Hugging Face CLI 或 API 下载 `Qwen/Qwen2.5-Coder-7B-Instruct` 权重。
+
+4. **选择合适的微调方案并启动训练**：
+   - 若需要全参数监督微调，可运行 `train_sft.py`：
+
+     ```bash
+     python train_sft.py \
+         --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
+         --train_file data/papers.jsonl \
+         --validation_file data/valid.jsonl \
+         --output_dir outputs/sft_qwen25_quantum \
+         --per_device_train_batch_size 1 \
+         --num_train_epochs 3
+     ```
+
+   - 若仅需参数高效微调（LoRA/PEFT），可运行 `train_peft.py`：
+
+     ```bash
+     python train_peft.py \
+         --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
+         --train_file data/papers.jsonl \
+         --validation_file data/valid.jsonl \
+         --output_dir outputs/peft_qwen25_quantum \
+         --per_device_train_batch_size 1 \
+         --num_train_epochs 3
+     ```
+
+上述命令仅为示例，请根据实际硬件资源调整 batch size、epoch 数、学习率以及设备参数（如 GPU/NPU 数量）。
+
 ## 环境准备
 
 1. **硬件**：建议使用带有充足显存的 GPU 或 NPU。如果使用华为 Ascend NPU，请安装支持 PyTorch 的 `ascend‑pytorch` 套件，并设置 `ASCEND_VISIBLE_DEVICES` 等环境变量。
