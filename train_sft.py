@@ -136,7 +136,11 @@ def load_jsonl(path: str) -> List[Dict[str, str]]:
             code = obj.get("code") or obj.get("output") or obj.get("answer")
             if prompt is None or code is None:
                 raise ValueError(f"数据行缺少 prompt 或 code 字段: {line}")
-            samples.append({"prompt": prompt, "code": code})
+            sample: Dict[str, str] = {"prompt": prompt, "code": code}
+            analysis = obj.get("analysis")
+            if analysis:
+                sample["analysis"] = analysis
+            samples.append(sample)
     return samples
 
 
@@ -157,10 +161,14 @@ def prepare_dataset(samples: List[Dict[str, str]], tokenizer):
     """
     def build_text(example):
         system_prompt = "你是通义千问团队开发的助手，擅长编写量子代码。"
+        assistant_reply = example["code"]
+        analysis = example.get("analysis")
+        if analysis:
+            assistant_reply = f"{analysis}\n\n{assistant_reply}"
         return (
             f"<|system|>{system_prompt}<|end|>"
             f"<|user|>{example['prompt']}<|end|>"
-            f"<|assistant|>{example['code']}<|end|>"
+            f"<|assistant|>{assistant_reply}<|end|>"
         )
 
     texts = [build_text(sample) for sample in samples]

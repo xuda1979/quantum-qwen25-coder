@@ -117,17 +117,25 @@ def load_jsonl(path: str) -> List[Dict[str, str]]:
             code = obj.get("code") or obj.get("output") or obj.get("answer")
             if prompt is None or code is None:
                 raise ValueError(f"Invalid record: {line}")
-            samples.append({"prompt": prompt, "code": code})
+            sample: Dict[str, str] = {"prompt": prompt, "code": code}
+            analysis = obj.get("analysis")
+            if analysis:
+                sample["analysis"] = analysis
+            samples.append(sample)
     return samples
 
 
 def build_training_text(sample: Dict[str, str]) -> str:
     """构建带有角色标签的训练文本。"""
     system_prompt = "你是通义千问团队开发的助手，擅长编写量子代码。"
+    assistant_reply = sample["code"]
+    analysis = sample.get("analysis")
+    if analysis:
+        assistant_reply = f"{analysis}\n\n{assistant_reply}"
     return (
         f"<|system|>{system_prompt}<|end|>"
         f"<|user|>{sample['prompt']}<|end|>"
-        f"<|assistant|>{sample['code']}<|end|>"
+        f"<|assistant|>{assistant_reply}<|end|>"
     )
 
 
