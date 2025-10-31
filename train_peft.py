@@ -10,8 +10,8 @@
 ```
 python train_peft.py \
     --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
-    --train_file data/train.jsonl \
-    --validation_file data/valid.jsonl \
+    --train_file data/processed/train.jsonl \
+    --validation_file data/processed/valid.jsonl \
     --output_dir outputs/peft_qwen25_coder_quantum \
     --target_modules q_proj v_proj \
     --lora_r 8 \
@@ -22,12 +22,20 @@ python train_peft.py \
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List
+
+DEFAULT_PROCESSED_DIR = Path("data/processed")
+DEFAULT_TRAIN_FILE = DEFAULT_PROCESSED_DIR / "train.jsonl"
+DEFAULT_VALID_FILE = DEFAULT_PROCESSED_DIR / "valid.jsonl"
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from transformers import BatchEncoding
@@ -142,8 +150,18 @@ def build_training_text(sample: Dict[str, str]) -> str:
 def main():
     parser = argparse.ArgumentParser(description="LoRA fine‑tuning for Qwen2.5‑Coder on quantum tasks")
     parser.add_argument("--model_name", type=str, required=True, help="预训练模型名称或路径")
-    parser.add_argument("--train_file", type=str, required=True, help="训练数据文件（JSONL 格式）")
-    parser.add_argument("--validation_file", type=str, help="验证数据文件（JSONL 格式）")
+    parser.add_argument(
+        "--train_file",
+        type=str,
+        default=str(DEFAULT_TRAIN_FILE),
+        help="训练数据文件（JSONL 格式），默认读取 data/processed/train.jsonl",
+    )
+    parser.add_argument(
+        "--validation_file",
+        type=str,
+        default=str(DEFAULT_VALID_FILE),
+        help="验证数据文件（JSONL 格式），默认读取 data/processed/valid.jsonl",
+    )
     parser.add_argument("--output_dir", type=str, default="outputs/peft", help="输出目录")
     parser.add_argument("--target_modules", nargs="*", default=["q_proj", "v_proj"], help="LoRA 应用的模块名列表")
     parser.add_argument("--lora_r", type=int, default=8, help="LoRA rank 参数")
@@ -160,12 +178,33 @@ def main():
     )
     args = parser.parse_args()
 
+    logging.basicConfig(level=logging.INFO)
+
     use_npu_backend = bool(args.npu or os.environ.get("ACCELERATE_USE_NPU") == "1")
 
     _maybe_relaunch_with_torchrun(args.npu)
 
     if use_npu_backend:
         _set_single_npu_environment()
+
+    train_path = Path(args.train_file).expanduser()
+    if not train_path.exists():
+        raise FileNotFoundError(
+            f"训练数据文件 '{train_path}' 不存在。请先运行 `python tools/prepare_pdf_dataset.py --pdf-dir <PDF目录>` 生成数据，"
+            "或通过 --train_file 参数显式指定数据路径。"
+        )
+    args.train_file = str(train_path)
+
+    if args.validation_file:
+        valid_path = Path(args.validation_file).expanduser()
+        if valid_path.exists():
+            args.validation_file = str(valid_path)
+        else:
+            logger.warning(
+                "验证集文件 '%s' 不存在，将跳过评估。可通过 prepare_pdf_dataset.py 生成或使用 --validation_file 指定。",
+                valid_path,
+            )
+            args.validation_file = None
 
     # 延迟导入依赖库
     from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, DataCollatorForLanguageModeling

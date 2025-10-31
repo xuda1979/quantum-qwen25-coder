@@ -61,32 +61,58 @@ quantum-qwen25-coder/
 
    上述命令会抓取默认的教程、GitHub 以及 StackExchange 资源，自动完成去重与质量过滤。
 
-4. **PDF 论文转数据集：**
-   - 使用 `tools/pdf_to_sft.py` 可将论文 PDF 批量转化为 JSONL 数据。脚本会抽取 PDF 文本、按照指定窗口大小切分为多个片段，并生成包含 `prompt` 与 `code` 字段的训练样本（默认目标是原始文本，可通过模板参数自定义）。新版脚本支持启用多进程并行解析、对生成的 `code` 字段去重、自动裁剪参考文献部分以及输出 `analysis` 字段，适合一次性处理数千篇论文。
-   - 示例命令：
+4. **PDF 论文到训练数据的标准流程：**
+   - 本仓库提供 `tools/prepare_pdf_dataset.py`，可一站式完成 PDF 转文本、分块、模板化以及训练/验证集拆分，并默认把产物写入 `data/processed/`。
+   - 常见使用步骤如下（请在具备 `pypdf` 等依赖的环境中执行）：
 
      ```bash
-     pip install pypdf  # 如未安装 PDF 解析依赖
-     python tools/pdf_to_sft.py \
-         --input data/papers \
-         --output data/papers.jsonl \
-         --chunk-size 800 \
-         --chunk-overlap 120 \
+     pip install pypdf
+     python tools/prepare_pdf_dataset.py \
+         --pdf-dir data/papers \
+         --output-dir data/processed \
+         --chunk-size 1024 \
+         --chunk-overlap 128 \
          --strip-references \
-         --min-chunk-length 200 \
-         --workers 8
+         --dedupe \
+         --train-ratio 0.9
      ```
 
-   - 生成的数据可直接作为 `train_sft.py` 或 `train_peft.py` 的输入文件使用，必要时可结合额外的人工标注或模板进一步加工。
-   - 如果希望验证脚本关键逻辑，可运行项目内置的 `pytest` 单元测试，它会对文本清洗、分块、模板化输出等核心函数进行覆盖：
+     - `--pdf-dir`：指向存放原始论文 PDF 的目录，可递归搜索子目录。
+     - `--output-dir`：生成的 `train.jsonl`、`valid.jsonl`、`all.jsonl` 默认保存在 `data/processed/`，亦可自定义。
+     - `--chunk-size`、`--chunk-overlap`、`--min-chunk-length`：控制文本切分粒度；如需摘要式任务，可通过 `--instruction-template` 与 `--target-template` 修改提示内容。
+     - `--dedupe`：依据 `code` 字段去除重复片段，适合清理引用或重复段落。
+     - `--dataset-name`：可选参数，若传入则文件命名为 `<name>_train.jsonl` 等，便于同时管理多套数据。
 
-      ```bash
-      pytest tests/test_pdf_to_sft.py
-      ```
+   - 运行结束后终端会提示 `Processed datasets stored in 'data/processed'` 等信息，并确保至少写出 `train.jsonl` 与 `all.jsonl`；当可用样本数量较少时脚本会自动回退到平均切分策略，保证验证集不为空。
+   - 如需在更细粒度上定制文本解析流程（例如改写过滤逻辑或额外产出字段），仍可直接调用底层的 `tools/pdf_to_sft.py`，`prepare_pdf_dataset.py` 正是基于它进行了封装。
 
-      该测试套件会在临时目录下构造虚拟 PDF 路径，并通过 `monkeypatch` 注入伪造的文本内容，因此无需真实 PDF 文件即可快速检查脚本行为。
+5. **脚本自检与数据验证：**
+   - 建议在批量处理前后运行内置测试，确保 PDF 解析与数据切分逻辑正常：
 
-5. **数据清洗与增强：**
+     ```bash
+     pytest tests/test_prepare_pdf_dataset.py
+     ```
+
+   - 该测试会在临时目录中构造模拟 PDF 列表并验证 `train/valid/all` 文件写入流程，无需真实 PDF 即可快速自检。
+
+6. **微调脚本默认读取处理好的数据：**
+   - `train_sft.py` 与 `train_peft.py` 的 `--train_file` / `--validation_file` 参数默认分别指向 `data/processed/train.jsonl` 与 `data/processed/valid.jsonl`。若已执行上面的数据处理步骤，则可直接运行下述命令启动训练：
+
+     ```bash
+     python train_sft.py \
+         --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
+         --output_dir outputs/sft_qwen25_quantum
+     ```
+
+     ```bash
+     python train_peft.py \
+         --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
+         --output_dir outputs/peft_qwen25_quantum
+     ```
+
+   - 若需要切换到其它数据集，只需覆盖命令行参数或在 `prepare_pdf_dataset.py` 中使用 `--dataset-name` 输出新的数据文件，再传入对应路径即可。
+
+7. **数据清洗与增强：**
    - 清理掉无关信息，例如纯文字描述或缺少代码的记录。
    - 对代码进行格式化，确保缩进和语法正确。
    - 可添加自定义系统提示，鼓励模型遵循某些编码规范（如使用 Qiskit 优雅 API）。
@@ -95,48 +121,45 @@ quantum-qwen25-coder/
 
 由于当前仓库附带的开发容器仅提供 CPU 计算资源，且无法联网下载数十 GB 的预训练权重，也缺少完整的 GPU/NPU 驱动与编译工具链，因此**无法在该环境内直接执行 Qwen2.5‑Coder‑7B‑Instruct 的微调任务**。要完成端到端的训练，请按照以下建议在具备充足算力与网络的本地或云端环境中操作：
 
-1. **准备 PDF 语料并转换为 JSONL 数据集**：在目标机器上安装 `pypdf` 等依赖，运行本仓库提供的 `tools/pdf_to_sft.py` 脚本，将量子相关论文、文档 PDF 转换为模型可用的 `prompt`/`code` 样本。示例命令如下：
+1. **准备 PDF 语料并转换为 JSONL 数据集**：在目标机器上安装 `pypdf` 等依赖，优先使用 `tools/prepare_pdf_dataset.py` 完成从 PDF 到 `data/processed/` 标准数据集的全流程处理；如需自定义可直接调用 `tools/pdf_to_sft.py`。
 
    ```bash
    pip install pypdf
-   python tools/pdf_to_sft.py \
-       --input data/papers \
-       --output data/papers.jsonl \
-       --chunk-size 800 \
-       --chunk-overlap 120 \
+   python tools/prepare_pdf_dataset.py \
+       --pdf-dir data/papers \
+       --output-dir data/processed \
        --strip-references \
-       --min-chunk-length 200 \
-       --workers 8
+       --train-ratio 0.9
    ```
 
-2. **在转换前后运行快速自检**：可通过 `pytest tests/test_pdf_to_sft.py` 在本地验证脚本的核心逻辑是否正常，这一步不需要真实 PDF 文件即可完成。
+2. **在转换前后运行快速自检**：可通过 `pytest tests/test_prepare_pdf_dataset.py` 在本地验证脚本的核心逻辑是否正常，这一步不需要真实 PDF 文件即可完成。
 
 3. **下载基础模型权重与训练依赖**：在具备网络和存储的主机上安装 `torch`、`transformers`、`peft` 等依赖，并使用 Hugging Face CLI 或 API 下载 `Qwen/Qwen2.5-Coder-7B-Instruct` 权重。
 
 4. **选择合适的微调方案并启动训练**：
    - 若需要全参数监督微调，可运行 `train_sft.py`：
 
-     ```bash
-     python train_sft.py \
-         --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
-         --train_file data/papers.jsonl \
-         --validation_file data/valid.jsonl \
-         --output_dir outputs/sft_qwen25_quantum \
-         --per_device_train_batch_size 1 \
-         --num_train_epochs 3
-     ```
+      ```bash
+      python train_sft.py \
+          --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
+          --train_file data/processed/train.jsonl \
+          --validation_file data/processed/valid.jsonl \
+          --output_dir outputs/sft_qwen25_quantum \
+          --per_device_train_batch_size 1 \
+          --num_train_epochs 3
+      ```
 
    - 若仅需参数高效微调（LoRA/PEFT），可运行 `train_peft.py`：
 
-     ```bash
-     python train_peft.py \
-         --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
-         --train_file data/papers.jsonl \
-         --validation_file data/valid.jsonl \
-         --output_dir outputs/peft_qwen25_quantum \
-         --per_device_train_batch_size 1 \
-         --num_train_epochs 3
-     ```
+      ```bash
+      python train_peft.py \
+          --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
+          --train_file data/processed/train.jsonl \
+          --validation_file data/processed/valid.jsonl \
+          --output_dir outputs/peft_qwen25_quantum \
+          --per_device_train_batch_size 1 \
+          --num_train_epochs 3
+      ```
 
 上述命令仅为示例，请根据实际硬件资源调整 batch size、epoch 数、学习率以及设备参数（如 GPU/NPU 数量）。
 
