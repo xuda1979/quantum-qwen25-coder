@@ -65,16 +65,22 @@ quantum-qwen25-coder/
    - 本仓库提供 `tools/prepare_pdf_dataset.py`，可一站式完成 PDF 转文本、分块、模板化以及训练/验证集拆分，并默认把产物写入 `data/processed/`。
    - 常见使用步骤如下（请在具备 `pypdf` 等依赖的环境中执行）：
 
+   ```bash
+   pip install pypdf
+   python tools/prepare_pdf_dataset.py \
+       --pdf-dir data/papers \
+       --output-dir data/processed \
+       --chunk-size 1024 \
+       --chunk-overlap 128 \
+       --strip-references \
+       --dedupe \
+       --train-ratio 0.9
+   ```
+
+   - **一行命令速查**：若已在环境中安装依赖，可直接运行
+
      ```bash
-     pip install pypdf
-     python tools/prepare_pdf_dataset.py \
-         --pdf-dir data/papers \
-         --output-dir data/processed \
-         --chunk-size 1024 \
-         --chunk-overlap 128 \
-         --strip-references \
-         --dedupe \
-         --train-ratio 0.9
+     python tools/prepare_pdf_dataset.py --pdf-dir data/papers --output-dir data/processed --chunk-size 1024 --chunk-overlap 128 --strip-references --dedupe --train-ratio 0.9
      ```
 
      - `--pdf-dir`：指向存放原始论文 PDF 的目录，可递归搜索子目录。
@@ -98,17 +104,27 @@ quantum-qwen25-coder/
 6. **微调脚本默认读取处理好的数据：**
    - `train_sft.py` 与 `train_peft.py` 的 `--train_file` / `--validation_file` 参数默认分别指向 `data/processed/train.jsonl` 与 `data/processed/valid.jsonl`。若已执行上面的数据处理步骤，则可直接运行下述命令启动训练：
 
-     ```bash
-     python train_sft.py \
-         --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
-         --output_dir outputs/sft_qwen25_quantum
-     ```
+    ```bash
+    python train_sft.py \
+        --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
+        --output_dir outputs/sft_qwen25_quantum
+    ```
 
-     ```bash
-     python train_peft.py \
-         --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
-         --output_dir outputs/peft_qwen25_quantum
-     ```
+    ```bash
+    python train_peft.py \
+        --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
+        --output_dir outputs/peft_qwen25_quantum
+    ```
+
+    - **一行命令速查**：
+
+      ```bash
+      python train_sft.py --model_name Qwen/Qwen2.5-Coder-7B-Instruct --output_dir outputs/sft_qwen25_quantum
+      ```
+
+      ```bash
+      python train_peft.py --model_name Qwen/Qwen2.5-Coder-7B-Instruct --output_dir outputs/peft_qwen25_quantum
+      ```
 
    - 若需要切换到其它数据集，只需覆盖命令行参数或在 `prepare_pdf_dataset.py` 中使用 `--dataset-name` 输出新的数据文件，再传入对应路径即可。
 
