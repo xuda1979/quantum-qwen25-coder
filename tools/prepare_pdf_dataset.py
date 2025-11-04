@@ -251,11 +251,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         seed=args.seed,
     )
 
-    message = [f"Processed datasets stored in '{output_dir}'", f"train={train_path}"]
+    message = [f"处理完成，数据已保存至 '{output_dir}'", f"训练集={train_path}"]
     if valid_path:
-        message.append(f"valid={valid_path}")
+        message.append(f"验证集={valid_path}")
     else:
-        message.append("valid=<not created>")
+        message.append("验证集=<未生成>")
     logger.info("%s", "; ".join(message))
     print("; ".join(message))
 

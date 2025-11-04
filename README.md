@@ -63,6 +63,8 @@ quantum-qwen25-coder/
 
 4. **PDF 论文到训练数据的标准流程：**
    - 本仓库提供 `tools/prepare_pdf_dataset.py`，可一站式完成 PDF 转文本、分块、模板化以及训练/验证集拆分，并默认把产物写入 `data/processed/`。
+   - 生成的 JSONL 文件每行包含 `prompt`（指令）、`code`（模型要学习的答案）以及 `metadata` 字段，必要时还可通过 `--analysis-template` 产出 `analysis` 字段，可直接交由 `train_sft.py`、`train_peft.py` 等脚本进行微调。
+   - 转换流程可概括为：① 自动遍历指定目录中的全部 PDF；② 解析文本并根据设定的窗口大小切分；③ 套用模板生成监督微调格式；④ 依据比例拆分训练/验证集并输出。
    - 常见使用步骤如下（请在具备 `pypdf` 等依赖的环境中执行）：
 
    ```bash
