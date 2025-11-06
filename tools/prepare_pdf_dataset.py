@@ -8,10 +8,15 @@ import argparse
 import json
 import logging
 import random
+import sys
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
-from tools import pdf_to_sft
+if __package__ in {None, ""}:
+    sys.path.append(str(Path(__file__).resolve().parent.parent))
+    from tools import pdf_to_sft  # type: ignore  # noqa: WPS433 (dynamic import for CLI usage)
+else:  # pragma: no cover - exercised when imported as a package module
+    from . import pdf_to_sft
 
 
 logger = logging.getLogger(__name__)
@@ -102,11 +107,13 @@ def prepare_datasets(
     """Process PDFs under *pdf_dir* and save datasets into *output_dir*."""
 
     if not pdf_dir.exists():
-        raise FileNotFoundError(f"PDF directory '{pdf_dir}' does not exist")
+        logger.warning("PDF directory '%s' does not exist; skipping.", pdf_dir)
+        return None, None
 
     pdf_paths = list(pdf_to_sft.iter_pdf_files([pdf_dir]))
     if not pdf_paths:
-        raise FileNotFoundError(f"No PDF files found under '{pdf_dir}'")
+        logger.warning("No PDF files found under '%s'; skipping.", pdf_dir)
+        return None, None
 
     records = _collect_records(
         pdf_paths,
@@ -250,6 +257,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         train_ratio=args.train_ratio,
         seed=args.seed,
     )
+
+    if train_path is None:
+        message = f"未处理任何PDF；请检查目录 '{pdf_dir}' 是否存在且包含PDF文件。"
+        logger.warning(message)
+        print(message)
+        return
 
     message = [f"处理完成，数据已保存至 '{output_dir}'", f"训练集={train_path}"]
     if valid_path:
