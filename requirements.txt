@@ -1,0 +1,12 @@
+torch>=2.1.0
+transformers>=4.38.2
+peft>=0.7.0
+datasets
+accelerate
+qiskit
+pypdf
+pytest
+tqdm
+trl
+bitsandbytes
+pylint
