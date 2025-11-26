@@ -295,6 +295,33 @@ python evaluate.py \
 3. 在训练脚本中不需要显式指定设备，Transformers 会自动选择 `cuda` 或 `npu` 作为默认设备。如果需要自定义，可以使用 `model.to('npu')`。
 4. LoRA 微调通常对显存需求较低，更适合在 NPU 上快速迭代。
 
+## Reinforcement Learning with PPO
+
+This project also supports Reinforcement Learning (RL) fine-tuning using Proximal Policy Optimization (PPO). This approach further refines the model by optimizing it based on a reward signal, which in this case is the successful compilation of the generated quantum code.
+
+### How it Works
+
+The `train_rl.py` script uses the TRL library to implement a PPO training loop. The process involves:
+
+1. **Generating Code**: The model generates quantum code based on prompts from the training data.
+2. **Evaluating Code**: The generated code is evaluated using a reward function. In this implementation, the code is compiled, and a positive reward is given for successful compilation, while a negative reward is given for failure.
+3. **Optimizing the Policy**: The PPO algorithm uses the reward signal to update the model's policy, encouraging it to generate more accurate and syntactically correct code.
+
+### Usage
+
+To run the RL fine-tuning, use the following command:
+
+```bash
+python train_rl.py \
+    --model_name Qwen/Qwen2.5-Coder-7B-Instruct \
+    --train_file data/train.jsonl \
+    --output_dir outputs/rl_qwen25_quantum
+```
+
+**Note:** The training data file should be in JSONL format, and each line should contain a "prompt" field with the natural language description of the task.
+
+This will train the model using PPO and save the optimized model to the specified output directory.
+
 ## 开发建议
 
 1. **数据规模**：为了取得理想效果，建议准备包含数万到数十万条问答/代码对的数据。我们提供的示例仅用于演示流程。

@@ -1,25 +1,12 @@
-# It is recommended to use a virtual environment to install the dependencies.
-# python -m venv venv
-# source venv/bin/activate
-# pip install -r requirements.txt
-
-# Core dependencies
-torch
-transformers
-peft
+torch>=2.1.0
+transformers>=4.38.2
+peft>=0.7.0
 datasets
 accelerate
 qiskit
-
-# Data collection and processing
-requests
-beautifulsoup4
 pypdf
-
-# Testing and code quality
 pytest
-flake8
-mypy
 tqdm
-ipykernel
-jupyter
+trl
+bitsandbytes
+pylint
