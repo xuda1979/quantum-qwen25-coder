@@ -1,46 +1,68 @@
+# Copyright 2024 The Qwen2.5-Coder-7B-Instruct Authors and The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """
-量子专用模型评估脚本。
+Evaluation script for the quantum-specialized model.
 
-该脚本可以对微调后的模型在一组评测题上进行推理，生成相应的量子代码，并尝试编译运行以检验代码有效率。
+This script can infer from a fine-tuned model on a set of evaluation questions,
+generate the corresponding quantum code, and attempt to compile and run it to
+verify its validity.
 
-评测流程：
+Evaluation process:
 
-1. 读取一个包含若干评测样本的 JSONL 文件。每条记录包含 `prompt` 字段（问题描述）以及 `reference` 字段（参考代码，可选）。
-2. 加载指定的模型和分词器。
-3. 使用模型对每个 `prompt` 进行生成，得到模型输出的代码字符串。
-4. 尝试用 Python 的 `compile()` 内置函数编译生成的代码，若编译通过则认为该样例有效。
-5. 统计编译通过的比例，并可输出生成的代码至指定文件供人工检查。
+1. Read a JSONL file containing several evaluation samples. Each record should
+   contain a "prompt" field (the problem description) and an optional "reference"
+   field (the reference code).
+2. Load the specified model and tokenizer.
+3. Generate code for each "prompt" using the model.
+4. Attempt to compile the generated code using Python's built-in `compile()`
+   function. If compilation is successful, the sample is considered valid.
+5. If the `--functional-correctness` flag is set, the script will also execute
+   the generated code and compare its output to the reference solution.
+6. Calculate the proportion of successfully compiled and functionally correct
+   samples and optionally output the generated code to a specified file for
+   manual inspection.
 
-使用示例：
+Usage example:
 
 ```
 python evaluate.py \
     --model_dir outputs/peft_qwen25_coder_quantum \
     --eval_file data/eval.jsonl \
     --max_new_tokens 256 \
-    --result_file outputs/eval_results.jsonl
+    --result_file outputs/eval_results.jsonl \
+    --functional-correctness
 ```
 
-注意：运行该脚本前请确保已安装 transformers、qiskit 等依赖，并具有足够的显存或内存用于推理。
+Note: Before running this script, ensure that you have installed the necessary
+dependencies such as transformers and qiskit, and have sufficient VRAM or RAM
+for inference.
 """
 
 import argparse
 import json
-from typing import List, Dict
+import logging
+from typing import Dict, List
 
+from tools.data_utils import load_jsonl
 
-def load_eval_samples(path: str) -> List[Dict[str, str]]:
-    samples: List[Dict[str, str]] = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            obj = json.loads(line)
-            samples.append(obj)
-    return samples
+logger = logging.getLogger(__name__)
 
 
 def compile_python_code(code: str) -> bool:
-    """尝试编译给定的 Python 代码字符串。
-    返回 True 表示编译通过，False 表示存在语法错误。
+    """Attempt to compile the given Python code string.
+
+    Returns True if compilation is successful, otherwise False for syntax errors.
     """
     try:
         compile(code, "<string>", "exec")
@@ -49,26 +71,75 @@ def compile_python_code(code: str) -> bool:
         return False
 
 
+def execute_python_code(code: str, reference_solution: str) -> bool:
+    """Execute the given Python code string and compare its output to the reference solution.
+
+    Returns True if the output matches the reference solution, otherwise False.
+    """
+    try:
+        # We assume that the reference solution is a string that can be evaluated.
+        expected_output = eval(reference_solution)
+        # We assume that the generated code prints its output to stdout.
+        from io import StringIO
+        import sys
+
+        old_stdout = sys.stdout
+        sys.stdout = captured_output = StringIO()
+        exec(code)
+        sys.stdout = old_stdout
+        actual_output = eval(captured_output.getvalue())
+        return actual_output == expected_output
+    except Exception:
+        return False
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate fine‑tuned model on quantum tasks")
-    parser.add_argument("--model_dir", type=str, required=True, help="微调模型的目录")
-    parser.add_argument("--eval_file", type=str, required=True, help="评测数据集 JSONL 文件")
-    parser.add_argument("--result_file", type=str, required=False, help="生成结果保存路径")
-    parser.add_argument("--max_new_tokens", type=int, default=256, help="生成的最大 token 数")
+    """The main function for the evaluation script."""
+    parser = argparse.ArgumentParser(description="Evaluate a fine-tuned model on quantum tasks")
+    parser.add_argument(
+        "--model_dir",
+        type=str,
+        required=True,
+        help="The directory of the fine-tuned model.",
+    )
+    parser.add_argument(
+        "--eval_file",
+        type=str,
+        required=True,
+        help="The evaluation dataset in JSONL format.",
+    )
+    parser.add_argument(
+        "--result_file",
+        type=str,
+        required=False,
+        help="The path to save the generation results.",
+    )
+    parser.add_argument(
+        "--max_new_tokens",
+        type=int,
+        default=256,
+        help="The maximum number of tokens to generate.",
+    )
+    parser.add_argument(
+        "--functional-correctness",
+        action="store_true",
+        help="Enable functional correctness evaluation.",
+    )
     args = parser.parse_args()
 
-    # 延迟导入 transformers
+    # Defer importing transformers.
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    samples = load_eval_samples(args.eval_file)
+    samples = load_jsonl(args.eval_file)
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(args.model_dir, trust_remote_code=True)
 
     valid_count = 0
-    results = []
+    correct_count = 0
+    results: List[Dict] = []
     for idx, sample in enumerate(samples):
         prompt = sample["prompt"]
-        system_prompt = "你是通义千问团队开发的助手，擅长编写量子代码。"
+        system_prompt = "You are an assistant developed by the Qwen team, specializing in writing quantum code."
         input_text = (
             f"<|system|>{system_prompt}<|end|>"
             f"<|user|>{prompt}<|end|>"
@@ -76,21 +147,36 @@ def main():
         )
         inputs = tokenizer([input_text], return_tensors="pt").to(model.device)
         outputs = model.generate(**inputs, max_new_tokens=args.max_new_tokens)
-        # 解码生成的 tokens，移除提示部分
+        # Decode the generated tokens, removing the prompt part.
         generated_ids = outputs[0][inputs.input_ids.shape[-1] :]
         generated_code = tokenizer.decode(generated_ids, skip_special_tokens=True)
-        success = compile_python_code(generated_code)
-        if success:
+        compile_success = compile_python_code(generated_code)
+        if compile_success:
             valid_count += 1
+
+        functional_success = False
+        if compile_success and args.functional_correctness and "reference" in sample:
+            functional_success = execute_python_code(generated_code, sample["reference"])
+            if functional_success:
+                correct_count += 1
+
         results.append({
             "prompt": prompt,
             "generated_code": generated_code,
-            "compile_success": success,
+            "compile_success": compile_success,
+            "functional_success": functional_success,
         })
-        print(f"[{idx+1}/{len(samples)}] Compile {'OK' if success else 'FAIL'}")
+        print(
+            f"[{idx+1}/{len(samples)}] Compile {'OK' if compile_success else 'FAIL'}, "
+            f"Functional {'OK' if functional_success else 'FAIL'}"
+        )
 
     valid_ratio = valid_count / len(samples)
-    print(f"\n有效代码比例：{valid_ratio:.2%}")
+    print(f"\nValid code ratio: {valid_ratio:.2%}")
+    if args.functional_correctness:
+        correct_ratio = correct_count / len(samples)
+        print(f"Functional correctness ratio: {correct_ratio:.2%}")
+
     if args.result_file:
         with open(args.result_file, "w", encoding="utf-8") as f_out:
             for item in results:

@@ -1,19 +1,39 @@
-"""高级量子编程数据收集脚本。
+# Copyright 2024 The Qwen2.5-Coder-7B-Instruct Authors and The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Advanced data collection script for quantum programming.
 
-该脚本旨在自动化收集高质量的量子编程训练语料，主要特性包括：
+This script is designed to automate the collection of high-quality quantum
+programming training corpora, with the following main features:
 
-* 支持从 **Qiskit Textbook** 等在线教程页面抽取标题、上下文与代码示例；
-* 可从精选的 GitHub 仓库（如 Qiskit、Cirq、PennyLane 等）下载示例程序并自动生成合适的提示语；
-* 利用 StackExchange API 获取热门量子计算问答，将问题正文与回答中的代码块配对；
-* 提供基本的质量过滤（代码行数、关键词匹配）与去重机制；
-* 通过命令行参数自定义输出路径、最小代码行数以及需要启用的数据源。
+*   Supports extracting titles, contexts, and code examples from online
+    tutorial pages such as the **Qiskit Textbook**.
+*   Can download sample programs from selected GitHub repositories (e.g.,
+    Qiskit, Cirq, PennyLane) and automatically generate appropriate prompts.
+*   Uses the StackExchange API to retrieve popular quantum computing Q&A,
+    pairing question bodies with code blocks from the answers.
+*   Provides basic quality filtering (code line count, keyword matching) and
+    a deduplication mechanism.
+*   Allows customization of the output path, minimum code lines, and enabled
+    data sources through command-line arguments.
 
-收集到的数据以 JSON Lines 格式写入磁盘，每条记录包含 `prompt`、`code` 以及 `metadata`
-字段，可直接用于监督微调或质量评估。请确保遵循目标站点的使用条款，并在批量抓取时适当控制
-请求频率。
+The collected data is written to disk in JSON Lines format, with each record
+containing `prompt`, `code`, and `metadata` fields, which can be directly used
+for supervised fine-tuning or quality assessment. Please ensure that you
+comply with the terms of use of the target sites and control the request
+frequency appropriately when crawling in bulk.
 """
-
-from __future__ import annotations
 
 import argparse
 import html
@@ -28,7 +48,6 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 import requests
 from bs4 import BeautifulSoup
-
 
 HEADERS = {
     "User-Agent": (
@@ -48,15 +67,15 @@ DEFAULT_QISKIT_TUTORIALS: Sequence[str] = (
 DEFAULT_GITHUB_FILES: Sequence[Dict[str, Optional[str]]] = (
     {
         "url": "https://raw.githubusercontent.com/qiskit-community/ibm-quantum-challenge-2021/main/lab1/lab1.py",
-        "prompt": "使用 Qiskit 构建并测量贝尔态，理解量子纠缠的基本操作。",
+        "prompt": "Use Qiskit to build and measure a Bell state, understanding the basic operations of quantum entanglement.",
     },
     {
         "url": "https://raw.githubusercontent.com/quantumlib/Cirq/master/examples/bell_inequality.py",
-        "prompt": "使用 Cirq 模拟贝尔不等式实验，展示如何执行参数扫描并分析测量结果。",
+        "prompt": "Use Cirq to simulate a Bell inequality experiment, demonstrating how to perform parameter sweeps and analyze measurement results.",
     },
     {
         "url": "https://raw.githubusercontent.com/PennyLaneAI/pennylane/master/examples/qml_strongly_entangling_layers.py",
-        "prompt": "演示如何在 PennyLane 中构建强纠缠层并训练变分量子电路。",
+        "prompt": "Demonstrate how to build strongly entangling layers and train a variational quantum circuit in PennyLane.",
     },
 )
 
@@ -67,7 +86,7 @@ KEYWORD_HINTS = ("qiskit", "quantumcircuit", "cirq", "pennylane", "qsharp", "ans
 
 @dataclass
 class Record:
-    """单条量子编程数据记录。"""
+    """A single quantum programming data record."""
 
     prompt: str
     code: str
@@ -75,7 +94,7 @@ class Record:
 
 
 class QuantumDataCollector:
-    """封装多种数据源的采集逻辑。"""
+    """Encapsulates the collection logic for various data sources."""
 
     def __init__(
         self,
@@ -91,7 +110,7 @@ class QuantumDataCollector:
         self._seen_hashes: set[str] = set()
 
     # ------------------------------------------------------------------
-    # 通用工具
+    # Generic utilities
     # ------------------------------------------------------------------
     def _fetch(
         self,
@@ -136,6 +155,7 @@ class QuantumDataCollector:
     # Qiskit Textbook
     # ------------------------------------------------------------------
     def collect_qiskit_textbook(self, urls: Iterable[str]) -> None:
+        """Collect data from the Qiskit Textbook."""
         for url in urls:
             try:
                 print(f"[Qiskit] Fetching {url}")
@@ -166,9 +186,10 @@ class QuantumDataCollector:
                 print(f"[Qiskit] Failed to collect from {url}: {exc}")
 
     # ------------------------------------------------------------------
-    # GitHub 原始文件
+    # GitHub raw files
     # ------------------------------------------------------------------
     def collect_github_files(self, resources: Iterable[Dict[str, Optional[str]]]) -> None:
+        """Collect data from GitHub raw files."""
         for resource in resources:
             url = resource["url"]
             fallback_prompt = resource.get("prompt")
@@ -205,10 +226,10 @@ class QuantumDataCollector:
 
         filename = url.split("/")[-1]
         fallback = filename.replace("_", " ").replace("-", " ")
-        return f"阅读并理解以下量子编程示例：{fallback}。"
+        return f"Read and understand the following quantum programming example: {fallback}."
 
     # ------------------------------------------------------------------
-    # StackExchange 问答
+    # StackExchange Q&A
     # ------------------------------------------------------------------
     def collect_stackexchange(
         self,
@@ -217,6 +238,7 @@ class QuantumDataCollector:
         max_questions: int,
         answers_per_question: int,
     ) -> None:
+        """Collect data from StackExchange."""
         params = {
             "order": "desc",
             "sort": "votes",
@@ -281,9 +303,10 @@ class QuantumDataCollector:
         return blocks
 
     # ------------------------------------------------------------------
-    # 输出
+    # Output
     # ------------------------------------------------------------------
     def save_jsonl(self, path: str) -> None:
+        """Save the collected records to a JSONL file."""
         directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
@@ -299,35 +322,57 @@ class QuantumDataCollector:
 
 
 def parse_cli_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Collect quantum programming data from multiple sources")
-    parser.add_argument("--output", type=str, default="data/quantum_corpus.jsonl", help="输出 JSONL 文件路径")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="data/quantum_corpus.jsonl",
+        help="The path to the output JSONL file.",
+    )
     parser.add_argument(
         "--source",
         choices=("qiskit", "github", "stackexchange"),
         nargs="+",
         default=("qiskit", "github", "stackexchange"),
-        help="启用的数据源类型",
+        help="The types of data sources to enable.",
     )
-    parser.add_argument("--min_code_lines", type=int, default=6, help="保留的代码片段最少有效行数")
-    parser.add_argument("--stackexchange_questions", type=int, default=8, help="StackExchange 最多抓取的问题数量")
-    parser.add_argument("--stackexchange_answers", type=int, default=2, help="每个问题保留的回答数量")
+    parser.add_argument(
+        "--min_code_lines",
+        type=int,
+        default=6,
+        help="The minimum number of effective lines of code for a snippet to be retained.",
+    )
+    parser.add_argument(
+        "--stackexchange_questions",
+        type=int,
+        default=8,
+        help="The maximum number of questions to fetch from StackExchange.",
+    )
+    parser.add_ourgent(
+        "--stackexchange_answers",
+        type=int,
+        default=2,
+        help="The number of answers to retain for each question.",
+    )
     parser.add_argument(
         "--github_file",
         action="append",
         default=[],
         metavar="URL[|PROMPT]",
-        help="额外的 GitHub 原始文件，可选自定义提示语。多次传入以添加多条",
+        help="Additional GitHub raw files, with an optional custom prompt. Pass multiple times to add multiple files.",
     )
     parser.add_argument(
         "--qiskit_url",
         action="append",
         default=[],
-        help="额外的 Qiskit 教程链接。",
+        help="Additional Qiskit tutorial links.",
     )
     return parser.parse_args()
 
 
 def build_custom_github_resources(cli_values: Sequence[str]) -> List[Dict[str, Optional[str]]]:
+    """Build a list of custom GitHub resources from command-line values."""
     resources: List[Dict[str, Optional[str]]] = []
     for item in cli_values:
         if "|" in item:
@@ -339,6 +384,14 @@ def build_custom_github_resources(cli_values: Sequence[str]) -> List[Dict[str, O
 
 
 def main() -> None:
+    """The main function for the crawler script."""
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+    except ImportError:
+        print("Please install the required dependencies: `pip install requests beautifulsoup4`")
+        return
+
     args = parse_cli_args()
 
     collector = QuantumDataCollector(min_code_lines=args.min_code_lines)

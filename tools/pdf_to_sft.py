@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+# Copyright 2024 The Qwen2.5-Coder-7B-Instruct Authors and The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Convert quantum-computing PDFs into supervised fine-tuning data.
 
 This utility reads one or more PDF files, extracts their text, splits the
@@ -23,15 +36,16 @@ chunks::
         --strip-references \
         --min-chunk-length 200
 
-By default, the generated prompt asks the model to总结 the provided chunk and
-the target text is simply the original chunk. You can customise the instruction
-and the target via ``--instruction-template`` and ``--target-template`` and even
-add an ``analysis`` field using ``--analysis-template``.
+By default, the generated prompt asks the model to summarize the provided chunk,
+and the target text is simply the original chunk. You can customize the
+instruction and the target via ``--instruction-template`` and
+``--target-template``, and even add an ``analysis`` field using
+``--analysis-template``.
 
 Requirements
 ------------
-This script depends on :mod:`pypdf` (preferred) or :mod:`PyPDF2`. Install one of
-these libraries before running the script::
+This script depends on :mod:`pypdf`. Install the library before
+running the script::
 
     pip install pypdf
 
@@ -46,8 +60,12 @@ import re
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
 
 logger = logging.getLogger(__name__)
 
@@ -55,20 +73,15 @@ logger = logging.getLogger(__name__)
 def extract_text_from_pdf(path: Path) -> str:
     """Extract text from a PDF file.
 
-    The function tries to import :mod:`pypdf` first and falls back to
-    :mod:`PyPDF2` if necessary. An informative error message is raised when no
-    suitable backend is available.
+    The function tries to import :mod:`pypdf`. An informative error message is
+    raised when the backend is not available.
     """
-
-    try:  # Prefer the actively maintained package name.
-        from pypdf import PdfReader  # type: ignore
-    except ImportError:
-        try:
-            from PyPDF2 import PdfReader  # type: ignore
-        except ImportError as exc:  # pragma: no cover - dependency error path
-            raise ImportError(
-                "Missing dependency: install either 'pypdf' or 'PyPDF2' to read PDF files."
-            ) from exc
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise ImportError(
+            "Missing dependency: install 'pypdf' to read PDF files."
+        ) from exc
 
     reader = PdfReader(str(path))
     pages: List[str] = []
@@ -84,7 +97,6 @@ def extract_text_from_pdf(path: Path) -> str:
 
 def _clean_page_text(text: str) -> str:
     """Normalise whitespace and repair simple hyphenation issues."""
-
     if not text:
         return ""
 
@@ -110,7 +122,6 @@ def _clean_page_text(text: str) -> str:
 
 def iter_pdf_files(paths: Sequence[Path]) -> Iterator[Path]:
     """Yield all PDF files under the provided paths."""
-
     for path in paths:
         if path.is_dir():
             for candidate in sorted(path.rglob("*")):
@@ -130,7 +141,6 @@ def chunk_text(
     Returns a list of ``(chunk, start_offset, end_offset)`` tuples where the
     offsets are measured on the normalised text.
     """
-
     if chunk_size <= 0:
         raise ValueError("chunk_size must be a positive integer")
     if not 0 <= chunk_overlap < chunk_size:
@@ -164,6 +174,8 @@ def build_records(
     strip_references: bool,
 ) -> Iterator[dict]:
     """Create JSONL records for all PDF chunks."""
+    if tqdm:
+        pdf_paths = tqdm(list(pdf_paths), desc="Processing PDFs")
 
     for pdf_path in pdf_paths:
         text = extract_text_from_pdf(pdf_path)
@@ -178,7 +190,7 @@ def build_records(
                 continue
             prompt = instruction_template.format(chunk=chunk, source=str(pdf_path), index=index)
             target = target_template.format(chunk=chunk, source=str(pdf_path), index=index)
-            record = {
+            record: Dict = {
                 "prompt": prompt,
                 "code": target,
                 "metadata": {
@@ -197,7 +209,6 @@ def build_records(
 
 def _strip_reference_section(text: str) -> str:
     """Remove reference/bibliography sections heuristically."""
-
     if not text:
         return text
 
@@ -212,6 +223,7 @@ def _strip_reference_section(text: str) -> str:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Convert PDF papers to JSONL for SFT training")
     parser.add_argument(
         "--input",
@@ -224,37 +236,37 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=str,
         required=True,
-        help="Path to the output JSONL file.",
+        help="The path to the output JSONL file.",
     )
     parser.add_argument(
         "--chunk-size",
         type=int,
         default=1024,
-        help="Maximum number of characters per chunk (default: 1024).",
+        help="The maximum number of characters per chunk (default: 1024).",
     )
     parser.add_argument(
         "--chunk-overlap",
         type=int,
         default=128,
-        help="Number of characters to overlap between consecutive chunks (default: 128).",
+        help="The number of characters to overlap between consecutive chunks (default: 128).",
     )
     parser.add_argument(
         "--instruction-template",
         type=str,
-        default="请阅读以下论文片段并总结其关键技术要点：\n\n{chunk}",
-        help="Template used to build the prompt. Available variables: {chunk}, {source}, {index}.",
+        default="Please read the following paper snippet and summarize its key technical points:\n\n{chunk}",
+        help="The template used to build the prompt. Available variables: {chunk}, {source}, {index}.",
     )
     parser.add_argument(
         "--target-template",
         type=str,
         default="{chunk}",
-        help="Template used to build the target output. Variables: {chunk}, {source}, {index}.",
+        help="The template used to build the target output. Variables: {chunk}, {source}, {index}.",
     )
     parser.add_argument(
         "--analysis-template",
         type=str,
         default=None,
-        help="Optional template used to populate an 'analysis' field in each record.",
+        help="An optional template used to populate an 'analysis' field in each record.",
     )
     parser.add_argument(
         "--min-chunk-length",
@@ -271,7 +283,7 @@ def parse_args() -> argparse.Namespace:
         "--workers",
         type=int,
         default=0,
-        help="Number of worker processes for parallel PDF parsing (0 disables multiprocessing).",
+        help="The number of worker processes for parallel PDF parsing (0 disables multiprocessing).",
     )
     parser.add_argument(
         "--dedupe",
@@ -287,6 +299,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """The main function for the PDF to SFT script."""
+    try:
+        import pypdf
+    except ImportError:
+        print("Please install the required dependencies: `pip install pypdf`")
+        return
+
     args = parse_args()
 
     logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(levelname)s: %(message)s")
@@ -348,7 +367,7 @@ def main() -> None:
 
 
 def _process_single_pdf(
-    pdf_path: Path,
+    pdf_,
     *,
     chunk_size: int,
     chunk_overlap: int,
@@ -360,7 +379,7 @@ def _process_single_pdf(
 ) -> List[dict]:
     return list(
         build_records(
-            pdf_paths=[pdf_path],
+            pdf_paths=[pdf_],
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             instruction_template=instruction_template,

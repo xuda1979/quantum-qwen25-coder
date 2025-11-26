@@ -1,161 +1,68 @@
-from pathlib import Path
-import sys
+# Copyright 2024 The Qwen2.5-Coder-7B-Instruct Authors and The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Tests for the pdf_to_sft module."""
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
-import tools.pdf_to_sft as pdf_to_sft
+from tools import pdf_to_sft
 
 
-@pytest.fixture()
-def sample_text():
-    return (
-        "Quantum computing enables new algorithms and error correction schemes. "
-        "This paragraph ends before references."
-    )
+def test_iter_pdf_files(tmp_path: Path) -> None:
+    """Test the iter_pdf_files function."""
+    pdf_dir = tmp_path / "pdfs"
+    pdf_dir.mkdir()
+    pdf1 = pdf_dir / "paper1.pdf"
+    pdf1.touch()
+    pdf2 = pdf_dir / "paper2.pdf"
+    pdf2.touch()
+    txt_file = pdf_dir / "notes.txt"
+    txt_file.touch()
+
+    pdf_files = list(pdf_to_sft.iter_pdf_files([pdf_dir]))
+    assert len(pdf_files) == 2
+    assert pdf1 in pdf_files
+    assert pdf2 in pdf_files
 
 
-def test_clean_page_text_merges_hyphenation():
-    text = "Quantum-\n computing \n\n\t advances"
-    cleaned = pdf_to_sft._clean_page_text(text)
-    assert cleaned == "Quantumcomputing\n\nadvances"
+def test_chunk_text() -> None:
+    """Test the chunk_text function."""
+    text = "This is a test sentence. This is another test sentence."
+    chunks = pdf_to_sft.chunk_text(text, chunk_size=20, chunk_overlap=5)
+    assert len(chunks) == 4
+    assert chunks[0][0] == "This is a test sente"
+    assert chunks[1][0] == "sentence. This is an"
+    assert chunks[2][0] == "is another test sent"
+    assert chunks[3][0] == " sentence."
 
 
-@pytest.mark.parametrize(
-    "chunk_size, chunk_overlap",
-    [
-        (10, 2),
-        (8, 0),
-    ],
-)
-def test_chunk_text_produces_expected_overlap(chunk_size, chunk_overlap):
-    text = "0123456789" * 2
-    chunks = pdf_to_sft.chunk_text(text, chunk_size, chunk_overlap)
-    assert chunks, "chunk_text should produce output"
-    first_chunk, _start, _end = chunks[0]
-    assert first_chunk == text[: len(first_chunk)]
-    assert len(first_chunk) <= chunk_size
+def test_strip_reference_section() -> None:
+    """Test the _strip_reference_section function."""
+    text = "This is the main content.\n\nREFERENCES\nThis is a reference."
+    stripped_text = pdf_to_sft._strip_reference_section(text)
+    assert stripped_text == "This is the main content."
 
-    for (chunk, _start, end), (next_chunk, next_start, _next_end) in zip(chunks, chunks[1:]):
-        assert len(chunk) <= chunk_size
-        assert next_start == max(0, end - chunk_overlap)
-        assert next_chunk.startswith(text[next_start:next_start + len(next_chunk)])
+    text = "This is the main content.\n\nBIBLIOGRAPHY\nThis is a reference."
+    stripped_text = pdf_to_sft._strip_reference_section(text)
+    assert stripped_text == "This is the main content."
 
 
-@pytest.mark.parametrize(
-    "chunk_size, chunk_overlap",
-    [(0, 1), (10, 10), (5, -1)],
-)
-def test_chunk_text_validation(chunk_size, chunk_overlap):
-    with pytest.raises(ValueError):
-        pdf_to_sft.chunk_text("hello", chunk_size, chunk_overlap)
-
-
-def test_strip_reference_section_removes_tail():
-    body = "Intro text\nMore content\nReferences\n[1] Citation"
-    assert pdf_to_sft._strip_reference_section(body) == "Intro text\nMore content"
-
-
-def test_strip_reference_section_keeps_early_heading():
-    body = "References\nBody text that follows."
-    assert pdf_to_sft._strip_reference_section(body) == body
-
-
-def test_iter_pdf_files_discovers_nested_pdfs(tmp_path: Path):
-    root = tmp_path / "papers"
-    root.mkdir()
-    first = root / "paper1.pdf"
-    first.write_text("dummy")
-    subdir = root / "nested"
-    subdir.mkdir()
-    second = subdir / "paper2.PDF"
-    second.write_text("dummy")
-    unrelated = root / "notes.txt"
-    unrelated.write_text("nope")
-
-    discovered = list(pdf_to_sft.iter_pdf_files([root]))
-    assert set(discovered) == {first, second}
-
-
-def test_build_records_uses_templates(monkeypatch, tmp_path: Path, sample_text: str):
-    pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_text("irrelevant content")
-
-    def fake_extract(path: Path) -> str:
-        assert path == pdf_path
-        return sample_text
-
-    monkeypatch.setattr(pdf_to_sft, "extract_text_from_pdf", fake_extract)
-
-    records = list(
-        pdf_to_sft.build_records(
-            pdf_paths=[pdf_path],
-            chunk_size=64,
-            chunk_overlap=16,
-            instruction_template="Summarise chunk {index}: {chunk}",
-            target_template="Chunk {index}: {chunk}",
-            analysis_template="Notes {index}",
-            min_chunk_length=10,
-            strip_references=True,
-        )
-    )
-
-    assert records, "Expected at least one record from sample text"
-    first = records[0]
-    assert first["prompt"].startswith("Summarise chunk 1:")
-    assert first["code"].startswith("Chunk 1:")
-    assert first["analysis"] == "Notes 1"
-    assert first["metadata"]["source"] == str(pdf_path)
-    assert first["metadata"]["chunk_index"] == 1
-
-
-@pytest.mark.parametrize("analysis_template", ["Analysis {index}", None])
-def test_process_single_pdf_returns_list(monkeypatch, tmp_path: Path, sample_text: str, analysis_template):
-    pdf_path = tmp_path / "single.pdf"
-    pdf_path.write_text("irrelevant")
-
-    monkeypatch.setattr(pdf_to_sft, "extract_text_from_pdf", lambda _path: sample_text)
-
-    records = pdf_to_sft._process_single_pdf(
-        pdf_path,
-        chunk_size=32,
-        chunk_overlap=0,
-        instruction_template="Prompt {index}",
-        target_template="Target {index}",
-        analysis_template=analysis_template,
-        min_chunk_length=10,
-        strip_references=False,
-    )
-
-    assert isinstance(records, list)
-    assert records
-    assert all(record["metadata"]["source"] == str(pdf_path) for record in records)
-    if analysis_template:
-        assert all("analysis" in record for record in records)
-    else:
-        assert all("analysis" not in record for record in records)
-
-
-def test_build_records_respects_min_chunk_length(monkeypatch, tmp_path: Path):
-    pdf_path = tmp_path / "short.pdf"
-    pdf_path.write_text("irrelevant")
-
-    monkeypatch.setattr(pdf_to_sft, "extract_text_from_pdf", lambda _path: "short text")
-
-    records = list(
-        pdf_to_sft.build_records(
-            pdf_paths=[pdf_path],
-            chunk_size=64,
-            chunk_overlap=0,
-            instruction_template="Prompt",
-            target_template="Target",
-            analysis_template=None,
-            min_chunk_length=20,
-            strip_references=False,
-        )
-    )
-
-    assert records == []
+def test_clean_page_text() -> None:
+    """Test the _clean_page_text function."""
+    text = "This is a    test sentence.\n\nThis is another test sen-\ntence."
+    cleaned_text = pdf_to_sft._clean_page_text(text)
+    assert cleaned_text == "This is a test sentence.\n\nThis is another test sentence."

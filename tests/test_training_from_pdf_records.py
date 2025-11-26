@@ -43,6 +43,7 @@ def test_train_sft_preserves_analysis(tmp_path: Path):
             "prompt": "Summarise the quantum paper chunk.",
             "code": "Quantum circuits enable novel algorithms.",
             "analysis": "Think step by step before answering.",
+            "metadata": {"source": "paper.pdf", "chunk_index": 1},
         }
     ]
 

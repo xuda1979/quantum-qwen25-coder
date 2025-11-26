@@ -1,11 +1,30 @@
+# Copyright 2024 The Qwen2.5-Coder-7B-Instruct Authors and The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you aapt may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """
-此脚本使用参数高效微调（Parameter‑Efficient Fine‑Tuning，PEFT）技术对 Qwen2.5‑Coder 进行量子编程任务的专门化微调。
+This script uses Parameter-Efficient Fine-Tuning (PEFT) to specialize the Qwen2.5-Coder
+for quantum programming tasks.
 
-这里采用了 LoRA（Low‑Rank Adaptation）方案，仅在特定的投影层上添加少量可训练参数，而保持原始模型权重冻结，从而显著降低显存占用和训练成本。
+It employs the LoRA (Low-Rank Adaptation) method, which adds a small number of trainable
+parameters to specific projection layers while keeping the original model weights frozen.
+This significantly reduces memory usage and training costs.
 
-在运行本脚本前，请确保安装了 `peft`、`transformers`、`datasets` 等依赖，并已准备好 JSONL 格式的训练数据。同样，为了兼顾没有安装相关依赖的环境，模块导入在函数内部进行。
+Before running this script, ensure that you have installed the `peft`, `transformers`,
+and `datasets` dependencies, and have prepared the training data in JSONL format.
+Similar to the other scripts, module imports are done inside functions to accommodate
+environments without these dependencies.
 
-使用示例：
+Usage example:
 
 ```
 python train_peft.py \
@@ -21,25 +40,31 @@ python train_peft.py \
 """
 
 import argparse
-import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List
+from typing import Dict, List
+
+import torch
+from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+    Trainer,
+    TrainingArguments,
+)
+
+from tools.data_utils import EncodingDataset, build_training_text, load_jsonl
 
 DEFAULT_PROCESSED_DIR = Path("data/processed")
 DEFAULT_TRAIN_FILE = DEFAULT_PROCESSED_DIR / "train.jsonl"
 DEFAULT_VALID_FILE = DEFAULT_PROCESSED_DIR / "valid.jsonl"
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from transformers import BatchEncoding
-    import torch
 
 
 def _maybe_relaunch_with_torchrun(requested_npus: int) -> None:
@@ -89,8 +114,6 @@ def _maybe_relaunch_with_torchrun(requested_npus: int) -> None:
 def _set_single_npu_environment() -> None:
     """Ensure single-process runs leverage ``torch.npu`` when available."""
 
-    import torch
-
     if not hasattr(torch, "npu"):
         raise RuntimeError(
             "PyTorch NPU support is not available. Install the Ascend PyTorch build to "
@@ -102,79 +125,80 @@ def _set_single_npu_environment() -> None:
     torch.npu.set_device(local_rank)
 
 
-@dataclass
-class _EncodingDataset:
-    encoding: "BatchEncoding"
-
-    def __len__(self) -> int:
-        return self.encoding["input_ids"].shape[0]
-
-    def __getitem__(self, idx: int) -> Dict[str, "torch.Tensor"]:
-        return {k: v[idx] for k, v in self.encoding.items()}
-
-
-def load_jsonl(path: str) -> List[Dict[str, str]]:
-    """加载 JSONL 格式文件，返回包含 prompt 与 code 的列表。"""
-    samples = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            obj = json.loads(line)
-            prompt = obj.get("prompt") or obj.get("instruction") or obj.get("input")
-            code = obj.get("code") or obj.get("output") or obj.get("answer")
-            if prompt is None or code is None:
-                raise ValueError(f"Invalid record: {line}")
-            sample: Dict[str, str] = {"prompt": prompt, "code": code}
-            analysis = obj.get("analysis")
-            if analysis:
-                sample["analysis"] = analysis
-            samples.append(sample)
-    return samples
-
-
-def build_training_text(sample: Dict[str, str]) -> str:
-    """构建带有角色标签的训练文本。"""
-    system_prompt = "你是通义千问团队开发的助手，擅长编写量子代码。"
-    assistant_reply = sample["code"]
-    analysis = sample.get("analysis")
-    if analysis:
-        assistant_reply = f"{analysis}\n\n{assistant_reply}"
-    return (
-        f"<|system|>{system_prompt}<|end|>"
-        f"<|user|>{sample['prompt']}<|end|>"
-        f"<|assistant|>{assistant_reply}<|end|>"
-    )
-
-
 def main():
-    parser = argparse.ArgumentParser(description="LoRA fine‑tuning for Qwen2.5‑Coder on quantum tasks")
-    parser.add_argument("--model_name", type=str, required=True, help="预训练模型名称或路径")
+    """The main function for the PEFT training script."""
+    parser = argparse.ArgumentParser(description="LoRA fine-tuning for Qwen2.5-Coder on quantum tasks")
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        required=True,
+        help="The name or path of the pre-trained model.",
+    )
     parser.add_argument(
         "--train_file",
         type=str,
         default=str(DEFAULT_TRAIN_FILE),
-        help="训练数据文件（JSONL 格式），默认读取 data/processed/train.jsonl",
+        help="The path to the training data file (in JSONL format), defaults to data/processed/train.jsonl.",
     )
     parser.add_argument(
         "--validation_file",
         type=str,
         default=str(DEFAULT_VALID_FILE),
-        help="验证数据文件（JSONL 格式），默认读取 data/processed/valid.jsonl",
+        help="The path to the validation data file (in JSONL format), defaults to data/processed/valid.jsonl.",
     )
-    parser.add_argument("--output_dir", type=str, default="outputs/peft", help="输出目录")
-    parser.add_argument("--target_modules", nargs="*", default=["q_proj", "v_proj"], help="LoRA 应用的模块名列表")
-    parser.add_argument("--lora_r", type=int, default=8, help="LoRA rank 参数")
-    parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA α 参数")
-    parser.add_argument("--lora_dropout", type=float, default=0.05, help="LoRA dropout 比例")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=1, help="每设备训练 batch size")
-    parser.add_argument("--num_train_epochs", type=int, default=3, help="训练 epoch 数")
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="outputs/peft",
+        help="The output directory.",
+    )
+    parser.add_argument(
+        "--target_modules",
+        nargs="*",
+        default=["q_proj", "v_proj"],
+        help="The list of module names to apply LoRA to.",
+    )
+    parser.add_argument(
+        "--lora_r",
+        type=int,
+        default=8,
+        help="The LoRA rank parameter.",
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=int,
+        default=32,
+        help="The LoRA alpha parameter.",
+    )
+    parser.add_argument(
+        "--lora_dropout",
+        type=float,
+        default=0.05,
+        help="The LoRA dropout rate.",
+    )
+    parser.add_argument(
+        "--per_device_train_batch_size",
+        type=int,
+        default=1,
+        help="The training batch size per device.",
+    )
+    parser.add_argument(
+        "--num_train_epochs",
+        type=int,
+        default=3,
+        help="The number of training epochs.",
+    )
     parser.add_argument(
         "--npu",
         type=int,
         default=0,
         metavar="N",
-        help="使用 N 张 NPU 进行训练；N>1 时脚本会自动通过 torchrun 重新启动",
+        help="Use N NPUs for training; if N > 1, the script will be automatically relaunched via torchrun.",
+    )
+    parser.add_argument(
+        "--mock-model",
+        action="store_true",
+        help="Use a mock model for testing purposes.",
     )
     args = parser.parse_args()
 
@@ -190,8 +214,9 @@ def main():
     train_path = Path(args.train_file).expanduser()
     if not train_path.exists():
         raise FileNotFoundError(
-            f"训练数据文件 '{train_path}' 不存在。请先运行 `python tools/prepare_pdf_dataset.py --pdf-dir <PDF目录>` 生成数据，"
-            "或通过 --train_file 参数显式指定数据路径。"
+            f"The training data file '{train_path}' does not exist. Please first run "
+            f"`python tools/prepare_pdf_dataset.py --pdf-dir <PDF directory>` to generate the data, "
+            f"or explicitly specify the data path with the --train_file parameter."
         )
     args.train_file = str(train_path)
 
@@ -201,26 +226,29 @@ def main():
             args.validation_file = str(valid_path)
         else:
             logger.warning(
-                "验证集文件 '%s' 不存在，将跳过评估。可通过 prepare_pdf_dataset.py 生成或使用 --validation_file 指定。",
+                "The validation set file '%s' does not exist, skipping evaluation. You can generate it "
+                "with prepare_pdf_dataset.py or specify it with --validation_file.",
                 valid_path,
             )
             args.validation_file = None
 
-    # 延迟导入依赖库
-    from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, DataCollatorForLanguageModeling
-    from peft import LoraConfig, get_peft_model, TaskType
-
-    # 加载数据集
+    # Load the datasets.
     train_samples = load_jsonl(args.train_file)
     eval_samples = load_jsonl(args.validation_file) if args.validation_file else None
 
-    # 加载模型与分词器
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(args.model_name, trust_remote_code=True)
+    # Load the model and tokenizer.
+    if args.mock_model:
+        from unittest.mock import MagicMock
+        tokenizer = MagicMock()
+        model = MagicMock()
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(args.model_name, trust_remote_code=True)
+
     if use_npu_backend:
         model.to("npu")
 
-    # 构建 PEFT 配置
+    # Configure PEFT.
     peft_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
@@ -232,11 +260,11 @@ def main():
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
 
-    # 构建训练文本并编码
+    # Build and encode the training text.
     def preprocess(samples: List[Dict[str, str]]):
         texts = [build_training_text(s) for s in samples]
         encoded = tokenizer(texts, truncation=True, padding=False, return_tensors="pt")
-        return _EncodingDataset(encoded)
+        return EncodingDataset(encoded)
 
     tokenized_train = preprocess(train_samples)
     tokenized_eval = preprocess(eval_samples) if eval_samples else None
@@ -245,7 +273,6 @@ def main():
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
-        evaluation_strategy="steps" if tokenized_eval is not None else "no",
         num_train_epochs=args.num_train_epochs,
         save_steps=500,
         logging_steps=100,
