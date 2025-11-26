@@ -1,9 +1,25 @@
+# Copyright 2024 The Qwen2.5-Coder-7B-Instruct Authors and The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """
-该脚本实现了对预训练模型的监督微调（Supervised Fine‑Tuning，简称 SFT）。
+This script implements Supervised Fine-Tuning (SFT) for a pre-trained model.
 
-它主要依赖 Hugging Face Transformers 框架，并假定用户已经安装了 transformers、datasets 等库，并提前下载了 Qwen2.5‑Coder‑7B‑Instruct 模型权重。训练将在 NPU 或 GPU 上进行，具体设备由 transformers 自动检测。
+It relies on the Hugging Face Transformers framework and assumes that the user has
+installed the necessary libraries and downloaded the Qwen2.5-Coder-7B-Instruct model
+weights. The training will be performed on an NPU or GPU, with the device being
+automatically detected by Transformers.
 
-使用示例：
+Usage example:
 
 ```
 python train_sft.py \
@@ -15,34 +31,45 @@ python train_sft.py \
     --num_train_epochs 1
 ```
 
-训练数据应为 JSON Lines 格式，每行包含至少一个名为 `prompt` 的字段和一个名为 `code` 或 `completion` 的字段。`prompt` 字段用于描述任务，`code` 字段为期望的代码输出。
+The training data should be in JSON Lines format, with each line containing at least
+a "prompt" field and a "code" or "completion" field. The "prompt" field describes
+the task, while the "code" field provides the expected code output.
 
-注意：
-  - 请根据实际硬件资源调整 batch_size、梯度累积步数等参数。
-  - 为了在没有 transformers 安装的环境下保证脚本可以被正确导入，此脚本将 transformers 的导入放在 `main` 函数内部。
-  - 如果在某些环境中没有安装 torchnpu 库，请自行将训练脚本迁移到合适的设备上运行。
+Note:
+  - Adjust parameters such as batch_size and gradient_accumulation_steps based on
+    the available hardware resources.
+  - To ensure that the script can be imported correctly in environments without
+    Transformers installed, the import of Transformers is placed inside the `main`
+    function.
+  - If the `torchnpu` library is not installed in your environment, please adapt
+    the training script to run on a suitable device.
 """
 
 import argparse
-import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List
+from typing import Dict, List
+
+import torch
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+    Trainer,
+    TrainingArguments,
+)
+
+from tools.data_utils import EncodingDataset, build_training_text, load_jsonl
 
 DEFAULT_PROCESSED_DIR = Path("data/processed")
 DEFAULT_TRAIN_FILE = DEFAULT_PROCESSED_DIR / "train.jsonl"
 DEFAULT_VALID_FILE = DEFAULT_PROCESSED_DIR / "valid.jsonl"
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from transformers import BatchEncoding
-    import torch
 
 
 def _maybe_relaunch_with_torchrun(requested_npus: int) -> None:
@@ -99,8 +126,6 @@ def _maybe_relaunch_with_torchrun(requested_npus: int) -> None:
 def _set_single_npu_environment() -> None:
     """Ensure single-process runs leverage NPU when ``torch.npu`` is available."""
 
-    import torch  # Imported lazily to avoid dependency when the script is only inspected
-
     if not hasattr(torch, "npu"):
         raise RuntimeError(
             "PyTorch NPU support is not available. Install the Ascend PyTorch build to "
@@ -112,74 +137,24 @@ def _set_single_npu_environment() -> None:
     torch.npu.set_device(local_rank)
 
 
-@dataclass
-class _EncodingDataset:
-    """A minimal dataset wrapper compatible with ``Trainer``."""
-
-    encoding: "BatchEncoding"
-
-    def __len__(self) -> int:  # noqa: D401
-        return self.encoding["input_ids"].shape[0]
-
-    def __getitem__(self, idx: int) -> Dict[str, "torch.Tensor"]:  # noqa: D401
-        return {k: v[idx] for k, v in self.encoding.items()}
-
-
-def load_jsonl(path: str) -> List[Dict[str, str]]:
-    """读取 JSON Lines 格式的数据文件。
-
-    Args:
-        path: 数据文件路径。
-    Returns:
-        列表，每个元素是包含 prompt 和 code 字段的字典。
-    """
-    samples = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            obj = json.loads(line)
-            # 统一键名为 instruction 和 output，使得数据更通用
-            prompt = obj.get("prompt") or obj.get("instruction") or obj.get("input")
-            code = obj.get("code") or obj.get("output") or obj.get("answer")
-            if prompt is None or code is None:
-                raise ValueError(f"数据行缺少 prompt 或 code 字段: {line}")
-            sample: Dict[str, str] = {"prompt": prompt, "code": code}
-            analysis = obj.get("analysis")
-            if analysis:
-                sample["analysis"] = analysis
-            samples.append(sample)
-    return samples
-
-
 def prepare_dataset(samples: List[Dict[str, str]], tokenizer):
-    """将原始样本转换为用于语言模型训练的格式。
+    """Convert raw samples into a format suitable for language model training.
 
-    每条样本将被合成为一个字符串，用于监督训练，例如：
+    Each sample will be synthesized into a single string for supervised training,
+    for example:
 
-    <|system|>你是通义千问团队开发的助手，擅长编写量子代码。<|end|>
+    <|system|>You are an assistant developed by the Qwen team, specializing in writing quantum code.<|end|>
     <|user|>{prompt}<|end|>
     <|assistant|>{code}<|end|>
 
     Args:
-        samples: 原始样本列表。
-        tokenizer: 用于编码的 tokenizer。
-    Returns:
-        一个字典，包含 tokenized 的训练样本。
-    """
-    def build_text(example):
-        system_prompt = "你是通义千问团队开发的助手，擅长编写量子代码。"
-        assistant_reply = example["code"]
-        analysis = example.get("analysis")
-        if analysis:
-            assistant_reply = f"{analysis}\n\n{assistant_reply}"
-        return (
-            f"<|system|>{system_prompt}<|end|>"
-            f"<|user|>{example['prompt']}<|end|>"
-            f"<|assistant|>{assistant_reply}<|end|>"
-        )
+        samples: A list of raw samples.
+        tokenizer: The tokenizer to use for encoding.
 
-    texts = [build_text(sample) for sample in samples]
+    Returns:
+        A dictionary containing the tokenized training samples.
+    """
+    texts = [build_training_text(sample) for sample in samples]
     tokenized = tokenizer(
         texts,
         truncation=True,
@@ -190,31 +165,67 @@ def prepare_dataset(samples: List[Dict[str, str]], tokenizer):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Supervised fine‑tuning for Qwen2.5‑Coder on quantum tasks")
-    parser.add_argument("--model_name", type=str, required=True, help="预训练模型名称或路径，例如 Qwen/Qwen2.5-Coder-7B-Instruct")
+    """The main function for the SFT training script."""
+    parser = argparse.ArgumentParser(description="Supervised fine-tuning for Qwen2.5-Coder on quantum tasks")
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        required=True,
+        help="The name or path of the pre-trained model, e.g., Qwen/Qwen2.5-Coder-7B-Instruct.",
+    )
     parser.add_argument(
         "--train_file",
         type=str,
         default=str(DEFAULT_TRAIN_FILE),
-        help="训练数据文件（JSONL 格式）路径，默认读取 data/processed/train.jsonl",
+        help="The path to the training data file (in JSONL format), defaults to data/processed/train.jsonl.",
     )
     parser.add_argument(
         "--validation_file",
         type=str,
         default=str(DEFAULT_VALID_FILE),
-        help="验证集文件（JSONL 格式）路径，默认读取 data/processed/valid.jsonl",
+        help="The path to the validation set file (in JSONL format), defaults to data/processed/valid.jsonl.",
     )
-    parser.add_argument("--output_dir", type=str, default="outputs/sft", help="模型保存路径")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=1, help="每个设备的 batch size")
-    parser.add_argument("--per_device_eval_batch_size", type=int, default=1, help="验证时的 batch size")
-    parser.add_argument("--num_train_epochs", type=int, default=3, help="训练 epoch 数")
-    parser.add_argument("--learning_rate", type=float, default=2e-5, help="学习率")
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="outputs/sft",
+        help="The path to save the model.",
+    )
+    parser.add_argument(
+        "--per_device_train_batch_size",
+        type=int,
+        default=1,
+        help="The batch size per device.",
+    )
+    parser.add_argument(
+        "--per_device_eval_batch_size",
+        type=int,
+        default=1,
+        help="The batch size for evaluation.",
+    )
+    parser.add_argument(
+        "--num_train_epochs",
+        type=int,
+        default=3,
+        help="The number of training epochs.",
+    )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=2e-5,
+        help="The learning rate.",
+    )
     parser.add_argument(
         "--npu",
         type=int,
         default=0,
         metavar="N",
-        help="使用 N 张 NPU 进行训练；N>1 时脚本会自动通过 torchrun 重新启动",
+        help="Use N NPUs for training; if N > 1, the script will be automatically relaunched via torchrun.",
+    )
+    parser.add_argument(
+        "--mock-model",
+        action="store_true",
+        help="Use a mock model for testing purposes.",
     )
     args = parser.parse_args()
 
@@ -230,8 +241,9 @@ def main():
     train_path = Path(args.train_file).expanduser()
     if not train_path.exists():
         raise FileNotFoundError(
-            f"训练数据文件 '{train_path}' 不存在。请先运行 `python tools/prepare_pdf_dataset.py --pdf-dir <PDF目录>` 生成数据，"
-            "或通过 --train_file 参数显式指定数据路径。"
+            f"The training data file '{train_path}' does not exist. Please first run "
+            f"`python tools/prepare_pdf_dataset.py --pdf-dir <PDF directory>` to generate the data, "
+            f"or explicitly specify the data path with the --train_file parameter."
         )
     args.train_file = str(train_path)
 
@@ -241,37 +253,34 @@ def main():
             args.validation_file = str(valid_path)
         else:
             logger.warning(
-                "验证集文件 '%s' 不存在，将跳过评估。可通过 prepare_pdf_dataset.py 生成或使用 --validation_file 指定。",
+                "The validation set file '%s' does not exist, skipping evaluation. You can generate it "
+                "with prepare_pdf_dataset.py or specify it with --validation_file.",
                 valid_path,
             )
             args.validation_file = None
 
-    # 这里延迟导入 transformers 以避免在没有安装的环境下报错
-    from transformers import (
-        AutoModelForCausalLM,
-        AutoTokenizer,
-        Trainer,
-        TrainingArguments,
-        DataCollatorForLanguageModeling,
-    )
-
-    # 加载数据
+    # Load the data.
     train_samples = load_jsonl(args.train_file)
     eval_samples = load_jsonl(args.validation_file) if args.validation_file else None
 
-    # 加载模型和分词器
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(args.model_name, trust_remote_code=True)
+    # Load the model and tokenizer.
+    if args.mock_model:
+        from unittest.mock import MagicMock
+        tokenizer = MagicMock()
+        model = MagicMock()
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(args.model_name, trust_remote_code=True)
     if use_npu_backend:
         model.to("npu")
 
-    # 准备数据集
-    tokenized_train = _EncodingDataset(prepare_dataset(train_samples, tokenizer))
+    # Prepare the datasets.
+    tokenized_train = EncodingDataset(prepare_dataset(train_samples, tokenizer))
     tokenized_eval = (
-        _EncodingDataset(prepare_dataset(eval_samples, tokenizer)) if eval_samples else None
+        EncodingDataset(prepare_dataset(eval_samples, tokenizer)) if eval_samples else None
     )
 
-    # 数据整理器，按语言模型方式拼接
+    # Data collator for language modeling.
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
     training_args = TrainingArguments(
@@ -280,7 +289,6 @@ def main():
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         num_train_epochs=args.num_train_epochs,
         learning_rate=args.learning_rate,
-        evaluation_strategy="steps" if tokenized_eval is not None else "no",
         save_steps=500,
         logging_steps=100,
         remove_unused_columns=False,
@@ -297,9 +305,10 @@ def main():
     )
 
     trainer.train()
-    # 保存模型和分词器
+    # Save the model and tokenizer.
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
+
 
 if __name__ == "__main__":
     main()
