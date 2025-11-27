@@ -19,41 +19,16 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, pipeline
 from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer
 from trl.core import LengthSampler
-import io
-from pylint.lint import Run
-from pylint.reporters.text import TextReporter
-
-def get_reward(code_snippets):
-    rewards = []
-    quantum_keywords = ["qiskit", "QuantumCircuit", "QuantumRegister", "ClassicalRegister", "execute", "Aer"]
-    for code in code_snippets:
-        try:
-            compile(code, "<string>", "exec")
-
-            # Pylint score
-            # Pylint score
-            try:
-                code_file = io.StringIO(code)
-                reporter = TextReporter(io.StringIO())
-                results = Run([code_file], reporter=reporter, exit=False)
-                pylint_score = results.linter.stats['global_note']
-            except Exception:
-                pylint_score = 0.0
-
-            # Keyword bonus
-            keyword_bonus = sum(0.5 for keyword in quantum_keywords if keyword in code)
-
-            reward = (pylint_score / 2.0) + keyword_bonus
-            rewards.append(reward)
-        except SyntaxError:
-            rewards.append(-10.0)
-    return rewards
+from rewards.code_reward import CodeReward
+from rewards.code_correctness_reward import CodeCorrectnessReward
+from rewards.math_correctness_reward import MathCorrectnessReward
 
 def main():
     parser = argparse.ArgumentParser(description="Reinforcement Learning fine-tuning for Qwen2.5-Coder")
     parser.add_argument("--model_name", type=str, required=True, help="Pre-trained model name or path")
     parser.add_argument("--train_file", type=str, required=True, help="Training data file (JSONL format)")
     parser.add_argument("--output_dir", type=str, default="outputs/rl", help="Output directory for the trained model")
+    parser.add_argument("--reward_function", type=str, default="code_simple", help="Reward function to use (code, math, etc.)")
     parser.add_argument("--learning_rate", type=float, default=1.41e-5, help="Learning rate")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
     parser.add_argument("--mini_batch_size", type=int, default=1, help="Mini batch size")
@@ -119,7 +94,23 @@ def main():
         batch["response"] = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
 
         # Compute reward
-        rewards = [torch.tensor(output) for output in get_reward(batch["response"])]
+        if args.reward_function == "code":
+            rewards = []
+            for i, response in enumerate(batch["response"]):
+                if "test_file" not in batch or not batch["test_file"][i]:
+                    rewards.append(torch.tensor(0.0))
+                else:
+                    reward_function = CodeCorrectnessReward(batch["test_file"][i])
+                    reward = reward_function.get_reward([response])[0]
+                    rewards.append(torch.tensor(reward))
+        elif args.reward_function == "math":
+            reward_function = MathCorrectnessReward()
+            rewards = [torch.tensor(output) for output in reward_function.get_reward(batch["response"])]
+        elif args.reward_function == "code_simple":
+            reward_function = CodeReward()
+            rewards = [torch.tensor(output) for output in reward_function.get_reward(batch["response"])]
+        else:
+            raise ValueError(f"Unknown reward function: {args.reward_function}")
 
         # Run PPO step
         stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
