@@ -1,0 +1,3 @@
+{"prompt": "def add(a, b):", "test_file": "verifiers/tests/add_test_template.py"}
+{"prompt": "def is_palindrome(s):", "test_file": "verifiers/tests/palindrome_test_template.py"}
+{"prompt": "x**2 - 2*x + 1"}

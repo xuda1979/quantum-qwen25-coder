@@ -1,0 +1,2 @@
+{"prompt": "def add(a, b):", "chosen": "    return a + b", "rejected": "    pass"}
+{"prompt": "import numpy as np", "chosen": "x = np.array([1, 2, 3])", "rejected": "import numpy as np\\nx = [1, 2, 3]"}
