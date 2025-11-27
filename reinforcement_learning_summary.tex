@@ -1,0 +1,88 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{geometry}
+
+\geometry{a4paper, margin=1in}
+
+\title{Verifiable Reinforcement Learning for Code and Reasoning: A Technical Overview of the Repository}
+\author{Repository Contributor}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document provides a comprehensive summary of the reinforcement learning (RL) algorithms and methodologies implemented in this repository for fine-tuning the Qwen2.5-Coder model. We focus on the integration of State-of-the-Art (SOTA) methods, specifically Proximal Policy Optimization (PPO) and Iterative Direct Preference Optimization (DPO), with a novel "Verifiable Reward" system. Unlike traditional RLHF which relies on learned reward models, our approach utilizes execution-based code verification and symbolic math verification to provide ground-truth feedback. This ensures the model optimizes for functional correctness, directly addressing hallucination in reasoning and coding tasks.
+\end{abstract}
+
+\section{Introduction}
+Large Language Models (LLMs) have demonstrated impressive capabilities in code generation and mathematical reasoning. However, standard Supervised Fine-Tuning (SFT) often fails to eliminate hallucinations or ensure functional correctness. Reinforcement Learning from Human Feedback (RLHF) has been the standard solution, but it relies on a proxy reward model which can be gamed or inaccurate.
+
+This repository implements a \textbf{Verifiable Reinforcement Learning} framework. The core innovation is the use of deterministic, verifiable signals (unit tests for code, symbolic evaluation for math) as the reward mechanism. This allows us to employ powerful RL algorithms like PPO and DPO to optimize the model against ground-truth correctness.
+
+\section{System Architecture}
+The system is built upon a modular architecture designed for the Qwen2.5-Coder-7B-Instruct model. The pipeline consists of:
+\begin{enumerate}
+    \item \textbf{Supervised Fine-Tuning (SFT):} Implemented in \texttt{train\_sft.py}, establishing a baseline policy.
+    \item \textbf{Parameter-Efficient Fine-Tuning (PEFT):} Implemented in \texttt{train\_peft.py}, using LoRA (Low-Rank Adaptation) to efficiently train the model.
+    \item \textbf{Reinforcement Learning (RL):} Implemented in \texttt{train\_rl.py} (PPO) and \texttt{train\_dpo\_preference\_generation.py} (Iterative DPO).
+\end{enumerate}
+
+\section{Verifiable Reward Engineering}
+A critical component of this repository is the \texttt{rewards/} and \texttt{verifiers/} modules, which provide the feedback signal for RL.
+
+\subsection{Code Correctness Reward}
+The \texttt{CodeCorrectnessReward} (in \texttt{rewards/code\_correctness\_reward.py}) uses the \texttt{CodeVerifier} to execute generated code against a suite of unit tests.
+\begin{itemize}
+    \item \textbf{Mechanism:} The generated code is combined with a hidden test file (template) and executed in a subprocess.
+    \item \textbf{Signal:} Returns 1.0 if all tests pass, 0.0 otherwise.
+    \item \textbf{Advantage:} This provides a sparse but perfectly accurate reward, eliminating the noise associated with learned reward models.
+\end{itemize}
+
+\subsection{Math Correctness Reward}
+The \texttt{MathCorrectnessReward} (in \texttt{rewards/math\_correctness\_reward.py}) uses \texttt{MathVerifier} (based on SymPy) to validate mathematical expressions. This ensures that the model generates syntactically valid and potentially mathematically equivalent expressions.
+
+\subsection{Heuristic Code Reward}
+For scenarios where full execution is not possible, the \texttt{CodeReward} (in \texttt{rewards/code\_reward.py}) implements a heuristic scoring system based on:
+\begin{itemize}
+    \item Syntax validity (via \texttt{compile}).
+    \item Static analysis scores (via \texttt{pylint}).
+    \item Keyword matching (domain-specific keywords).
+\end{itemize}
+
+\section{Reinforcement Learning Algorithms}
+
+\subsection{Proximal Policy Optimization (PPO)}
+Implemented in \texttt{train\_rl.py}, PPO is an on-policy gradient method that optimizes the language model policy $\pi_\theta$ to maximize the expected reward.
+\begin{equation}
+L^{CLIP}(\theta) = \hat{\mathbb{E}}_t \left[ \min(r_t(\theta)\hat{A}_t, \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t) \right]
+\end{equation}
+The implementation uses the \texttt{trl} library's \texttt{PPOTrainer}.
+\begin{itemize}
+    \item \textbf{Value Function:} An \texttt{AutoModelForCausalLMWithValueHead} is used to estimate the value of states (tokens), reducing variance in the gradient estimate.
+    \item \textbf{KL Penalty:} An adaptive KL divergence penalty ensures the model does not deviate too far from the reference SFT model, preventing mode collapse.
+\end{itemize}
+
+\subsection{Iterative Direct Preference Optimization (DPO)}
+Implemented in \texttt{train\_dpo\_preference\_generation.py}, DPO optimizes the policy directly from preferences without an explicit reward model.
+\begin{equation}
+L_{DPO}(\pi_\theta; \pi_{ref}) = - \mathbb{E}_{(x, y_w, y_l) \sim D} \left[ \log \sigma \left( \beta \log \frac{\pi_\theta(y_w|x)}{\pi_{ref}(y_w|x)} - \beta \log \frac{\pi_\theta(y_l|x)}{\pi_{ref}(y_l|x)} \right) \right]
+\end{equation}
+\textbf{Innovation: Iterative / Dynamic Preferences.}
+Unlike standard DPO which uses a static offline dataset, this repository implements an \textbf{online} variant.
+\begin{enumerate}
+    \item \textbf{Generation:} For a given prompt $x$, the current model generates $N$ responses $\{y_1, ..., y_N\}$.
+    \item \textbf{Scoring:} The verifiable reward function $R(y)$ evaluates each response.
+    \item \textbf{Pairing:} The highest scoring response is marked as chosen $y_w$ and the lowest as rejected $y_l$.
+    \item \textbf{Optimization:} The model is updated using the DPO loss on these dynamically generated pairs.
+\end{enumerate}
+This "Self-Play" mechanism allows the model to bootstrap its own capabilities, a technique considered SOTA in reasoning model training (similar to DeepSeek-R1 or Self-Rewarding LMs).
+
+\section{Conclusion}
+This repository represents a sophisticated implementation of Verifiable Reinforcement Learning. By coupling PPO and Iterative DPO with rigorous code and math verifiers, it addresses the fundamental challenges of correctness in Generative AI. The modular design allows for easy extension to new domains where ground-truth verification is possible.
+
+\end{document}
