@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 
+
 class CodeVerifier:
     """
     Verifies code snippets by running them against a suite of unit tests.
@@ -20,7 +21,9 @@ class CodeVerifier:
 
         full_code = code_snippet + "\n" + test_code
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False
+        ) as f:
             f.write(full_code)
             temp_file_name = f.name
 
@@ -30,7 +33,13 @@ class CodeVerifier:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=5,
             )
             return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
+        except Exception:
+            return False
         finally:
-            os.remove(temp_file_name)
+            if os.path.exists(temp_file_name):
+                os.remove(temp_file_name)
